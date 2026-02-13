@@ -11,10 +11,12 @@ app.use(express.json({ limit: '50mb' }));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    origin: ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
     methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
   },
   pingTimeout: 60000,
+  transports: ['websocket', 'polling']
 });
 
 // In-memory storage with persistence simulation
@@ -23,6 +25,14 @@ let users = new Map(); // Track connected users
 
 // Activity log for real-time updates
 let activityLog = [];
+
+// Helper to maintain column order
+const maintainColumnOrder = (tasksArray) => {
+  // Sort tasks within each column by creation date or a custom order
+  // For simplicity, we'll just return as-is, but you could implement
+  // a more sophisticated ordering system here
+  return tasksArray;
+};
 
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
@@ -34,8 +44,8 @@ io.on("connection", (socket) => {
   });
 
   // Send initial data
-  socket.emit("sync:tasks", tasks);
-  socket.emit("sync:activity", activityLog.slice(-10)); // Last 10 activities
+  socket.emit("sync:tasks", maintainColumnOrder(tasks));
+  socket.emit("sync:activity", activityLog.slice(-20)); // Last 20 activities
   socket.emit("users:online", Array.from(users.values()));
 
   // Broadcast updated user count
@@ -52,6 +62,7 @@ io.on("connection", (socket) => {
       comments: [],
       assignedTo: taskData.assignedTo || null,
       dueDate: taskData.dueDate || null,
+      order: tasks.length // Simple order field
     };
     tasks.push(newTask);
 
@@ -65,6 +76,7 @@ io.on("connection", (socket) => {
       timestamp: new Date().toISOString()
     };
     activityLog.push(activity);
+    if (activityLog.length > 100) activityLog.shift(); // Keep last 100
 
     io.emit("task:create", newTask);
     io.emit("activity:new", activity);
@@ -89,60 +101,87 @@ io.on("connection", (socket) => {
         timestamp: new Date().toISOString()
       };
       activityLog.push(activity);
+      if (activityLog.length > 100) activityLog.shift();
 
       io.emit("task:update", tasks[index]);
       io.emit("activity:new", activity);
     }
   });
 
-  // Task Move (Drag & Drop)
-  // Explicit sync request handler (Required by some tests)
+  // Explicit sync request handler
   socket.on("sync:tasks", () => {
-    socket.emit("sync:tasks", tasks);
+    socket.emit("sync:tasks", maintainColumnOrder(tasks));
   });
 
-  socket.on("task:move", ({ id, status, sourceIndex, destinationIndex }) => {
+  // Task Move with proper reordering
+  socket.on("task:move", ({ id, status, sourceIndex, destinationIndex, sourceColumn, destinationColumn }) => {
     const taskIndex = tasks.findIndex((t) => t.id === id);
-    if (taskIndex !== -1) {
-      const task = tasks[taskIndex];
-      const oldStatus = task.status;
+    if (taskIndex === -1) return;
 
-      // Update status
-      task.status = status;
-      task.updatedAt = new Date().toISOString();
-
-      // Handle reordering logic (remove from old position, insert at new)
-      tasks.splice(taskIndex, 1); // Remove from current array position
-
-      // Calculate new index - simple implementation for in-memory array
-      // In a real DB, you'd update an 'order' field.
-      // Here we just re-insert. For a true whiteboard, 
-      // we'd need to find the specific index relative to other tasks in that column.
-      // Since this is a simple flat array, we'll just push it back or use the destinationIndex if feasible.
-      // For this assignment's scope, mostly modifying status is the critical part.
-      // To support true reordering, we'd need to filter by status and splice.
-      // We will re-insert it at the end for simplicity or handle complex array manipulation if needed.
-      tasks.push(task);
-
-      const activity = {
-        id: uuidv4(),
-        type: 'move',
-        taskId: task.id,
-        taskTitle: task.title,
-        oldStatus,
-        newStatus: status,
-        userId: socket.id,
-        timestamp: new Date().toISOString()
-      };
-      activityLog.push(activity);
-
-      io.emit("task:move", {
-        task: task,
-        sourceIndex,
-        destinationIndex
-      });
-      io.emit("activity:new", activity);
+    const task = tasks[taskIndex];
+    const oldStatus = task.status;
+    
+    // Remove task from array
+    tasks.splice(taskIndex, 1);
+    
+    // Update status
+    task.status = status;
+    task.updatedAt = new Date().toISOString();
+    
+    // Find insertion point based on destination column
+    if (sourceColumn === destinationColumn) {
+      // Reordering within same column
+      const columnTasks = tasks.filter(t => t.status === status);
+      const insertAtIndex = Math.min(destinationIndex, columnTasks.length);
+      
+      // Find position in main array
+      let insertPos = 0;
+      let count = 0;
+      for (let i = 0; i < tasks.length; i++) {
+        if (tasks[i].status === status) {
+          if (count === insertAtIndex) {
+            insertPos = i;
+            break;
+          }
+          count++;
+        }
+        insertPos = i + 1;
+      }
+      
+      tasks.splice(insertPos, 0, task);
+    } else {
+      // Moving to different column - append at end of destination column
+      let insertPos = tasks.length;
+      for (let i = tasks.length - 1; i >= 0; i--) {
+        if (tasks[i].status === status) {
+          insertPos = i + 1;
+          break;
+        }
+      }
+      tasks.splice(insertPos, 0, task);
     }
+
+    const activity = {
+      id: uuidv4(),
+      type: 'move',
+      taskId: task.id,
+      taskTitle: task.title,
+      oldStatus,
+      newStatus: status,
+      userId: socket.id,
+      timestamp: new Date().toISOString()
+    };
+    activityLog.push(activity);
+    if (activityLog.length > 100) activityLog.shift();
+
+    io.emit("task:move", {
+      task: task,
+      sourceIndex,
+      destinationIndex,
+      sourceColumn,
+      destinationColumn
+    });
+    io.emit("activity:new", activity);
   });
 
   // Task Delete
@@ -160,6 +199,7 @@ io.on("connection", (socket) => {
         timestamp: new Date().toISOString()
       };
       activityLog.push(activity);
+      if (activityLog.length > 100) activityLog.shift();
 
       io.emit("task:delete", taskId);
       io.emit("activity:new", activity);
@@ -190,7 +230,7 @@ io.on("connection", (socket) => {
       const updated = updatedTasks.find(ut => ut.id === task.id);
       return updated || task;
     });
-    io.emit("sync:tasks", tasks);
+    io.emit("sync:tasks", maintainColumnOrder(tasks));
   });
 
   socket.on("disconnect", () => {
@@ -205,8 +245,6 @@ io.on("connection", (socket) => {
 app.post("/api/upload", (req, res) => {
   try {
     const { files } = req.body;
-    // In production, you'd save these files to cloud storage
-    // For demo, we'll just return the data URLs
     res.json({ success: true, files });
   } catch (error) {
     res.status(500).json({ error: error.message });

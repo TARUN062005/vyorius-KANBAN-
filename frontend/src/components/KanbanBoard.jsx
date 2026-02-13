@@ -9,20 +9,22 @@ import CreatableSelect from 'react-select/creatable';
 import io from 'socket.io-client';
 import { format } from 'date-fns';
 import {
-    Plus, Trash2, Edit, Paperclip, MessageCircle, Calendar,
-    Clock, Users, BarChart3, PieChart as PieChartIcon, X, Check,
-    AlertCircle, Upload, Download, Filter, Search, MoreVertical,
-    Archive, Copy, Share2, Star, Eye, EyeOff, Settings
+    Plus, Trash2, Paperclip, MessageCircle, Calendar,
+    Users, BarChart3, X, Check,
+    AlertCircle, Upload, Filter, Search, MoreVertical
 } from 'lucide-react';
 import { toast, Toaster } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
 
+// Socket connection with better error handling
 const socket = io('http://localhost:5000', {
-    transports: ['websocket'],
+    transports: ['websocket', 'polling'],
     reconnection: true,
-    reconnectionAttempts: 5,
-    reconnectionDelay: 1000
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000
 });
 
 const COLUMNS = [
@@ -46,8 +48,6 @@ const CATEGORIES = [
     { value: 'Testing', label: 'Testing', icon: '🧪' }
 ];
 
-const CHART_COLORS = ['#3b82f6', '#eab308', '#22c55e'];
-
 function KanbanBoard() {
     const [tasks, setTasks] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -55,7 +55,7 @@ function KanbanBoard() {
     const [editingTask, setEditingTask] = useState(null);
     const [onlineUsers, setOnlineUsers] = useState(0);
     const [activityLog, setActivityLog] = useState([]);
-    const [viewMode, setViewMode] = useState('board'); // 'board', 'list', 'timeline'
+    const [viewMode, setViewMode] = useState('board');
     const [searchTerm, setSearchTerm] = useState('');
     const [filterPriority, setFilterPriority] = useState(null);
     const [filterCategory, setFilterCategory] = useState(null);
@@ -64,11 +64,12 @@ function KanbanBoard() {
     const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
     const [comments, setComments] = useState([]);
     const [newComment, setNewComment] = useState('');
-    const [attachments, setAttachments] = useState([]);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
+    const [isActivityOpen, setIsActivityOpen] = useState(false);
+    const [isConnected, setIsConnected] = useState(true);
 
-    const fileInputRef = useRef(null);
+    const searchDebounceRef = useRef(null);
 
     const [formData, setFormData] = useState({
         title: '',
@@ -82,72 +83,88 @@ function KanbanBoard() {
         tags: []
     });
 
+    // Socket event handlers
     useEffect(() => {
-        socket.on('connect', () => {
+        const handleConnect = () => {
             console.log('Connected to server');
+            setIsConnected(true);
             toast.success('Connected to server');
-            // Explicitly request sync on connect (Required by tests)
             socket.emit('sync:tasks');
-        });
+        };
 
-        socket.on('disconnect', () => {
-            toast.error('Disconnected from server');
-        });
+        const handleDisconnect = () => {
+            setIsConnected(false);
+            toast.error('Disconnected from server. Reconnecting...');
+        };
 
-        socket.on('sync:tasks', (serverTasks) => {
+        const handleConnectError = (error) => {
+            console.error('Connection error:', error);
+            setIsConnected(false);
+        };
+
+        const handleSyncTasks = (serverTasks) => {
             setTasks(serverTasks);
             setIsLoading(false);
-        });
-
-        socket.on('sync:activity', (serverActivity) => {
-            setActivityLog(serverActivity);
-        });
-
-        socket.on('users:count', (count) => {
-            setOnlineUsers(count);
-        });
-
-        socket.on('activity:new', (activity) => {
-            setActivityLog(prev => [activity, ...prev].slice(0, 20));
-            if (activity.type === 'create') {
-                toast.success(`New task created: ${activity.taskTitle}`);
-            } else if (activity.type === 'move') {
-                toast(`${activity.taskTitle} moved to ${activity.newStatus}`, { icon: '🔄' });
-            }
-        });
-
-        const handleCreate = (newTask) => setTasks(prev => [...prev, newTask]);
-        const handleUpdate = (updatedTask) => setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
-        // Handle move including reordering
-        const handleMove = ({ task, sourceIndex, destinationIndex }) => {
-            setTasks(prev => {
-                // If it's a status change, update property
-                const updated = prev.map(t => t.id === task.id ? { ...t, status: task.status } : t);
-                // If we implemented true reordering on backend, we would re-sort here.
-                // For now, we rely on the updated status.
-                return updated;
-            });
         };
-        const handleDelete = (taskId) => {
+
+        const handleSyncActivity = (serverActivity) => {
+            setActivityLog(serverActivity);
+        };
+
+        const handleUsersCount = (count) => {
+            setOnlineUsers(count);
+        };
+
+        const handleActivityNew = (activity) => {
+            setActivityLog(prev => [activity, ...prev].slice(0, 30));
+            if (activity.type === 'create') {
+                toast.success(`New task: ${activity.taskTitle}`);
+            } else if (activity.type === 'move') {
+                toast(`${activity.taskTitle} moved`, { icon: '🔄' });
+            }
+        };
+
+        const handleTaskCreate = (newTask) => {
+            setTasks(prev => [...prev, newTask]);
+        };
+
+        const handleTaskUpdate = (updatedTask) => {
+            setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
+        };
+
+        const handleTaskMove = ({ task }) => {
+            setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t));
+        };
+
+        const handleTaskDelete = (taskId) => {
             setTasks(prev => prev.filter(t => t.id !== taskId));
             toast.success('Task deleted');
         };
 
-        socket.on('task:create', handleCreate);
-        socket.on('task:update', handleUpdate);
-        socket.on('task:move', handleMove);
-        socket.on('task:delete', handleDelete);
+        socket.on('connect', handleConnect);
+        socket.on('disconnect', handleDisconnect);
+        socket.on('connect_error', handleConnectError);
+        socket.on('sync:tasks', handleSyncTasks);
+        socket.on('sync:activity', handleSyncActivity);
+        socket.on('users:count', handleUsersCount);
+        socket.on('activity:new', handleActivityNew);
+        socket.on('task:create', handleTaskCreate);
+        socket.on('task:update', handleTaskUpdate);
+        socket.on('task:move', handleTaskMove);
+        socket.on('task:delete', handleTaskDelete);
 
         return () => {
-            socket.off('connect');
-            socket.off('disconnect');
-            socket.off('sync:tasks');
-            socket.off('users:count');
-            socket.off('activity:new');
-            socket.off('task:create', handleCreate);
-            socket.off('task:update', handleUpdate);
-            socket.off('task:move', handleMove);
-            socket.off('task:delete', handleDelete);
+            socket.off('connect', handleConnect);
+            socket.off('disconnect', handleDisconnect);
+            socket.off('connect_error', handleConnectError);
+            socket.off('sync:tasks', handleSyncTasks);
+            socket.off('sync:activity', handleSyncActivity);
+            socket.off('users:count', handleUsersCount);
+            socket.off('activity:new', handleActivityNew);
+            socket.off('task:create', handleTaskCreate);
+            socket.off('task:update', handleTaskUpdate);
+            socket.off('task:move', handleTaskMove);
+            socket.off('task:delete', handleTaskDelete);
         };
     }, []);
 
@@ -156,37 +173,32 @@ function KanbanBoard() {
 
         const { source, destination, draggableId } = result;
 
-        // Optimistic Update for both cross-column and same-column (reorder)
-        if (source.droppableId !== destination.droppableId || source.index !== destination.index) {
-            setTasks(prev => {
-                const newTasks = Array.from(prev);
-                const taskIndex = newTasks.findIndex(t => t.id === draggableId);
-                const [movedTask] = newTasks.splice(taskIndex, 1);
+        // Optimistic update
+        setTasks(prev => {
+            const newTasks = Array.from(prev);
+            const taskIndex = newTasks.findIndex(t => t.id === draggableId);
+            if (taskIndex === -1) return prev;
 
-                // Update status
-                movedTask.status = destination.droppableId;
+            newTasks[taskIndex] = {
+                ...newTasks[taskIndex],
+                status: destination.droppableId
+            };
+            return newTasks;
+        });
 
-                // Note: Since 'tasks' is flat, strictly reordering purely by index in a specific column 
-                // requires complex splicing relative to other items in that column. 
-                // For this assignment, we simply update the status and let the sort order be chronological 
-                // or appended. 
-                newTasks.push(movedTask); // Re-add to array
-
-                return newTasks;
-            });
-
-            socket.emit('task:move', {
-                id: draggableId,
-                status: destination.droppableId,
-                sourceIndex: source.index,
-                destinationIndex: destination.index
-            });
-        }
+        socket.emit('task:move', {
+            id: draggableId,
+            status: destination.droppableId,
+            sourceIndex: source.index,
+            destinationIndex: destination.index,
+            sourceColumn: source.droppableId,
+            destinationColumn: destination.droppableId
+        });
     }, []);
 
     const onDrop = useCallback(async (acceptedFiles, fileRejections) => {
         if (fileRejections.length > 0) {
-            toast.error("Unsupported file type or file too large");
+            toast.error("Unsupported file type or file too large (max 10MB)");
             return;
         }
 
@@ -216,7 +228,7 @@ function KanbanBoard() {
                 attachments: [...prev.attachments, ...newAttachments]
             }));
             setUploadProgress(100);
-            toast.success(`${newAttachments.length} files uploaded`);
+            toast.success(`${newAttachments.length} file(s) uploaded`);
         } catch (error) {
             toast.error('Error uploading files');
         } finally {
@@ -228,9 +240,11 @@ function KanbanBoard() {
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
         accept: {
-            'image/*': ['.png', '.jpg', '.jpeg', '.gif'],
+            'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.svg'],
             'application/pdf': ['.pdf'],
-            'text/plain': ['.txt']
+            'text/plain': ['.txt'],
+            'application/msword': ['.doc'],
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx']
         },
         maxSize: 10485760 // 10MB
     });
@@ -295,7 +309,6 @@ function KanbanBoard() {
     const openTaskDetail = useCallback((task) => {
         setSelectedTask(task);
         setComments(task.comments || []);
-        setAttachments(task.attachments || []);
         setIsDetailModalOpen(true);
     }, []);
 
@@ -305,7 +318,7 @@ function KanbanBoard() {
     }, []);
 
     const handleAddComment = useCallback(() => {
-        if (!newComment.trim()) return;
+        if (!newComment.trim() || !selectedTask) return;
 
         const comment = {
             id: Date.now().toString(),
@@ -323,6 +336,17 @@ function KanbanBoard() {
         setNewComment('');
         toast.success('Comment added');
     }, [newComment, selectedTask]);
+
+    // Debounced search
+    const handleSearchChange = (e) => {
+        const value = e.target.value;
+        if (searchDebounceRef.current) {
+            clearTimeout(searchDebounceRef.current);
+        }
+        searchDebounceRef.current = setTimeout(() => {
+            setSearchTerm(value);
+        }, 300);
+    };
 
     const metrics = useMemo(() => {
         const stats = tasks.reduce((acc, t) => {
@@ -342,11 +366,6 @@ function KanbanBoard() {
             color: p.color
         }));
 
-        const categoryData = CATEGORIES.map(c => ({
-            name: c.value,
-            count: tasks.filter(t => t.category === c.value).length
-        }));
-
         const completion = tasks.length
             ? Math.round(((stats['Done'] || 0) / tasks.length) * 100)
             : 0;
@@ -359,7 +378,6 @@ function KanbanBoard() {
         return {
             columnData,
             priorityData,
-            categoryData,
             completion,
             totalAttachments,
             overdueTasks,
@@ -393,9 +411,16 @@ function KanbanBoard() {
 
     return (
         <>
-            <Toaster position="top-right" />
+            <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
 
             <div style={styles.container}>
+                {/* Connection Status */}
+                {!isConnected && (
+                    <div style={styles.connectionBanner}>
+                        Reconnecting to server...
+                    </div>
+                )}
+
                 {/* Header */}
                 <motion.header
                     style={styles.header}
@@ -403,7 +428,7 @@ function KanbanBoard() {
                     animate={{ y: 0, opacity: 1 }}
                 >
                     <div style={styles.headerLeft}>
-                        <h1 style={styles.title}>Real-time Kanban Board</h1>
+                        <h1 style={styles.title}>TaskFlow</h1>
                         <div style={styles.badge}>
                             <Users size={14} />
                             <span>{onlineUsers} online</span>
@@ -416,15 +441,16 @@ function KanbanBoard() {
                             <input
                                 type="text"
                                 placeholder="Search tasks..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
+                                onChange={handleSearchChange}
                                 style={styles.searchInput}
+                                aria-label="Search tasks"
                             />
                         </div>
 
                         <button
                             style={styles.filterButton}
                             onClick={() => setShowFilters(!showFilters)}
+                            aria-label="Toggle filters"
                         >
                             <Filter size={18} />
                         </button>
@@ -433,25 +459,30 @@ function KanbanBoard() {
                             <button
                                 style={{ ...styles.viewButton, background: viewMode === 'board' ? '#e0e7ff' : 'transparent' }}
                                 onClick={() => setViewMode('board')}
+                                aria-label="Board view"
                             >
                                 <BarChart3 size={18} />
                             </button>
-                            <button
-                                style={{ ...styles.viewButton, background: viewMode === 'list' ? '#e0e7ff' : 'transparent' }}
-                                onClick={() => setViewMode('list')}
-                            >
-                                <Eye size={18} />
-                            </button>
                         </div>
+
+                        <button
+                            style={styles.activityToggle}
+                            onClick={() => setIsActivityOpen(!isActivityOpen)}
+                            aria-label="Toggle activity feed"
+                        >
+                            <MessageCircle size={18} />
+                            <span style={styles.activityBadge}>{activityLog.length}</span>
+                        </button>
 
                         <motion.button
                             style={styles.addButton}
                             onClick={() => openModal()}
                             whileHover={{ scale: 1.05 }}
                             whileTap={{ scale: 0.95 }}
+                            aria-label="Create new task"
                         >
                             <Plus size={20} />
-                            <span>New Task</span>
+                            <span className="add-button-text">New Task</span>
                         </motion.button>
                     </div>
                 </motion.header>
@@ -547,9 +578,8 @@ function KanbanBoard() {
                     initial={{ y: 20, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                     transition={{ delay: 0.2 }}
-                    data-testid="charts-container"
                 >
-                    <div style={styles.chartCard} data-testid="distribution-chart">
+                    <div style={styles.chartCard}>
                         <h3 style={styles.chartTitle}>Task Distribution</h3>
                         <ResponsiveContainer width="100%" height={200}>
                             <BarChart data={metrics.columnData} layout="vertical">
@@ -567,7 +597,7 @@ function KanbanBoard() {
                         </ResponsiveContainer>
                     </div>
 
-                    <div style={styles.chartCard} data-testid="completion-chart">
+                    <div style={styles.chartCard}>
                         <h3 style={styles.chartTitle}>Priority Breakdown</h3>
                         <ResponsiveContainer width="100%" height={200}>
                             <PieChart>
@@ -591,190 +621,212 @@ function KanbanBoard() {
                     </div>
                 </motion.div>
 
-                {/* Main Board */}
-                {viewMode === 'board' ? (
-                    <DragDropContext onDragEnd={handleDragEnd}>
-                        <div style={styles.board}>
-                            {COLUMNS.map(col => (
-                                <Droppable key={col.id} droppableId={col.id}>
-                                    {(provided, snapshot) => (
-                                        <motion.div
-                                            ref={provided.innerRef}
-                                            {...provided.droppableProps}
-                                            style={{
-                                                ...styles.column,
-                                                background: snapshot.isDraggingOver ? '#e0e7ff' : '#f8fafc',
-                                                borderColor: snapshot.isDraggingOver ? col.color : '#e2e8f0'
-                                            }}
-                                            initial={{ opacity: 0, y: 20 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            transition={{ delay: 0.1 * COLUMNS.indexOf(col) }}
-                                        >
-                                            <div style={styles.columnHeader}>
-                                                <div style={styles.columnTitle}>
-                                                    <span style={styles.columnIcon}>{col.icon}</span>
-                                                    <h3>{col.title}</h3>
-                                                    <span style={styles.taskCount}>
-                                                        {filteredTasks.filter(t => t.status === col.id).length}
-                                                    </span>
-                                                </div>
-                                            </div>
+                {/* Main Content Area */}
+                <div style={styles.mainContent}>
+                    {/* Board */}
+                    <div style={{ ...styles.boardWrapper, width: isActivityOpen ? 'calc(100% - 320px)' : '100%' }}>
+                        {viewMode === 'board' ? (
+                            <DragDropContext onDragEnd={handleDragEnd}>
+                                <div style={styles.board}>
+                                    {COLUMNS.map(col => (
+                                        <Droppable key={col.id} droppableId={col.id}>
+                                            {(provided, snapshot) => (
+                                                <motion.div
+                                                    ref={provided.innerRef}
+                                                    {...provided.droppableProps}
+                                                    style={{
+                                                        ...styles.column,
+                                                        background: snapshot.isDraggingOver ? '#e0e7ff' : '#f8fafc',
+                                                        borderColor: snapshot.isDraggingOver ? col.color : '#e2e8f0'
+                                                    }}
+                                                    initial={{ opacity: 0, y: 20 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    transition={{ delay: 0.1 * COLUMNS.indexOf(col) }}
+                                                >
+                                                    <div style={styles.columnHeader}>
+                                                        <div style={styles.columnTitle}>
+                                                            <span style={styles.columnIcon}>{col.icon}</span>
+                                                            <h3>{col.title}</h3>
+                                                            <span style={styles.taskCount}>
+                                                                {filteredTasks.filter(t => t.status === col.id).length}
+                                                            </span>
+                                                        </div>
+                                                    </div>
 
-                                            <div style={styles.taskList}>
-                                                {filteredTasks
-                                                    .filter(t => t.status === col.id)
-                                                    .map((task, index) => (
-                                                        <Draggable key={task.id} draggableId={task.id} index={index}>
-                                                            {(provided, snapshot) => (
-                                                                <motion.div
-                                                                    ref={provided.innerRef}
-                                                                    {...provided.draggableProps}
-                                                                    {...provided.dragHandleProps}
-                                                                    style={{
-                                                                        ...styles.taskCard,
-                                                                        ...provided.draggableProps.style,
-                                                                        boxShadow: snapshot.isDragging
-                                                                            ? '0 8px 16px rgba(0,0,0,0.1)'
-                                                                            : '0 1px 3px rgba(0,0,0,0.05)',
-                                                                        borderLeft: `4px solid ${PRIORITIES.find(p => p.value === task.priority)?.color
-                                                                            }`
-                                                                    }}
-                                                                    whileHover={{ y: -2, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                                                                    onClick={() => openTaskDetail(task)}
-                                                                >
-                                                                    <div style={styles.taskHeader}>
-                                                                        <div style={styles.taskBadges}>
-                                                                            <span style={{
-                                                                                ...styles.priorityBadge,
-                                                                                background: PRIORITIES.find(p => p.value === task.priority)?.color
-                                                                            }}>
-                                                                                {PRIORITIES.find(p => p.value === task.priority)?.icon}
-                                                                                {task.priority}
-                                                                            </span>
-                                                                            <span style={styles.categoryBadge}>
-                                                                                {CATEGORIES.find(c => c.value === task.category)?.icon}
-                                                                                {task.category}
-                                                                            </span>
-                                                                        </div>
-                                                                        <button
-                                                                            style={styles.taskMenuButton}
-                                                                            onClick={(e) => {
-                                                                                e.stopPropagation();
-                                                                                // Handle menu
+                                                    <div style={styles.taskList}>
+                                                        {filteredTasks
+                                                            .filter(t => t.status === col.id)
+                                                            .map((task, index) => (
+                                                                <Draggable key={task.id} draggableId={task.id} index={index}>
+                                                                    {(provided, snapshot) => (
+                                                                        <motion.div
+                                                                            ref={provided.innerRef}
+                                                                            {...provided.draggableProps}
+                                                                            {...provided.dragHandleProps}
+                                                                            style={{
+                                                                                ...styles.taskCard,
+                                                                                ...provided.draggableProps.style,
+                                                                                boxShadow: snapshot.isDragging
+                                                                                    ? '0 8px 16px rgba(0,0,0,0.1)'
+                                                                                    : '0 1px 3px rgba(0,0,0,0.05)',
+                                                                                borderLeft: `4px solid ${PRIORITIES.find(p => p.value === task.priority)?.color || '#94a3b8'
+                                                                                    }`
                                                                             }}
+                                                                            whileHover={{ y: -2, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                                                                            onClick={() => openTaskDetail(task)}
                                                                         >
-                                                                            <MoreVertical size={16} />
-                                                                        </button>
-                                                                    </div>
+                                                                            <div style={styles.taskHeader}>
+                                                                                <div style={styles.taskBadges}>
+                                                                                    <span style={{
+                                                                                        ...styles.priorityBadge,
+                                                                                        background: PRIORITIES.find(p => p.value === task.priority)?.color
+                                                                                    }}>
+                                                                                        {PRIORITIES.find(p => p.value === task.priority)?.icon}
+                                                                                        {task.priority}
+                                                                                    </span>
+                                                                                    <span style={styles.categoryBadge}>
+                                                                                        {CATEGORIES.find(c => c.value === task.category)?.icon}
+                                                                                        {task.category}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <button
+                                                                                    style={styles.taskMenuButton}
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        openModal(task);
+                                                                                    }}
+                                                                                >
+                                                                                    <MoreVertical size={16} />
+                                                                                </button>
+                                                                            </div>
 
-                                                                    <h4 style={styles.taskTitle}>{task.title}</h4>
+                                                                            <h4 style={styles.taskTitle}>{task.title}</h4>
 
-                                                                    {task.description && (
-                                                                        <p style={styles.taskDescription}>
-                                                                            {task.description.substring(0, 60)}
-                                                                            {task.description.length > 60 && '...'}
-                                                                        </p>
+                                                                            {task.description && (
+                                                                                <p style={styles.taskDescription}>
+                                                                                    {task.description.substring(0, 60)}
+                                                                                    {task.description.length > 60 && '...'}
+                                                                                </p>
+                                                                            )}
+
+                                                                            <div style={styles.taskMeta}>
+                                                                                {task.dueDate && (
+                                                                                    <div style={styles.metaItem}>
+                                                                                        <Calendar size={14} />
+                                                                                        <span>{format(new Date(task.dueDate), 'MMM d')}</span>
+                                                                                    </div>
+                                                                                )}
+
+                                                                                {task.attachments?.length > 0 && (
+                                                                                    <div style={styles.metaItem}>
+                                                                                        <Paperclip size={14} />
+                                                                                        <span>{task.attachments.length}</span>
+                                                                                    </div>
+                                                                                )}
+
+                                                                                {task.comments?.length > 0 && (
+                                                                                    <div style={styles.metaItem}>
+                                                                                        <MessageCircle size={14} />
+                                                                                        <span>{task.comments.length}</span>
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                        </motion.div>
                                                                     )}
-
-                                                                    <div style={styles.taskMeta}>
-                                                                        {task.dueDate && (
-                                                                            <div style={styles.metaItem}>
-                                                                                <Calendar size={14} />
-                                                                                <span>{format(new Date(task.dueDate), 'MMM d')}</span>
-                                                                            </div>
-                                                                        )}
-
-                                                                        {task.attachments?.length > 0 && (
-                                                                            <div style={styles.metaItem}>
-                                                                                <Paperclip size={14} />
-                                                                                <span>{task.attachments.length}</span>
-                                                                            </div>
-                                                                        )}
-
-                                                                        {task.comments?.length > 0 && (
-                                                                            <div style={styles.metaItem}>
-                                                                                <MessageCircle size={14} />
-                                                                                <span>{task.comments.length}</span>
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                </motion.div>
-                                                            )}
-                                                        </Draggable>
-                                                    ))}
-                                                {provided.placeholder}
+                                                                </Draggable>
+                                                            ))}
+                                                        {provided.placeholder}
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </Droppable>
+                                    ))}
+                                </div>
+                            </DragDropContext>
+                        ) : (
+                            // List View
+                            <div style={styles.listView}>
+                                {filteredTasks.map(task => (
+                                    <motion.div
+                                        key={task.id}
+                                        style={styles.listItem}
+                                        whileHover={{ x: 4 }}
+                                        onClick={() => openTaskDetail(task)}
+                                    >
+                                        <div style={styles.listItemLeft}>
+                                            <span style={{
+                                                ...styles.listPriorityDot,
+                                                background: PRIORITIES.find(p => p.value === task.priority)?.color
+                                            }} />
+                                            <div>
+                                                <h4>{task.title}</h4>
+                                                <p>{task.description}</p>
                                             </div>
-                                        </motion.div>
-                                    )}
-                                </Droppable>
-                            ))}
-                        </div>
-                    </DragDropContext>
-                ) : (
-                    // List View
-                    <div style={styles.listView}>
-                        {filteredTasks.map(task => (
-                            <motion.div
-                                key={task.id}
-                                style={styles.listItem}
-                                whileHover={{ x: 4 }}
-                                onClick={() => openTaskDetail(task)}
-                            >
-                                <div style={styles.listItemLeft}>
-                                    <span style={{
-                                        ...styles.listPriorityDot,
-                                        background: PRIORITIES.find(p => p.value === task.priority)?.color
-                                    }} />
-                                    <div>
-                                        <h4>{task.title}</h4>
-                                        <p>{task.description}</p>
-                                    </div>
-                                </div>
-                                <div style={styles.listItemRight}>
-                                    <span style={styles.listStatus}>{task.status}</span>
-                                    <span style={styles.listCategory}>{task.category}</span>
-                                </div>
-                            </motion.div>
-                        ))}
+                                        </div>
+                                        <div style={styles.listItemRight}>
+                                            <span style={styles.listStatus}>{task.status}</span>
+                                            <span style={styles.listCategory}>{task.category}</span>
+                                        </div>
+                                    </motion.div>
+                                ))}
+                            </div>
+                        )}
                     </div>
-                )}
 
-                {/* Activity Feed */}
-                <motion.div
-                    style={styles.activityFeed}
-                    initial={{ x: 300, opacity: 0 }}
-                    animate={{ x: 0, opacity: 1 }}
-                    transition={{ delay: 0.3 }}
-                >
-                    <h3 style={styles.activityTitle}>Live Activity</h3>
-                    <div style={styles.activityList}>
-                        {activityLog.map(activity => (
+                    {/* Activity Feed - Collapsible */}
+                    <AnimatePresence>
+                        {isActivityOpen && (
                             <motion.div
-                                key={activity.id}
-                                style={styles.activityItem}
-                                initial={{ opacity: 0, x: 20 }}
-                                animate={{ opacity: 1, x: 0 }}
+                                style={styles.activityFeed}
+                                initial={{ width: 0, opacity: 0 }}
+                                animate={{ width: 300, opacity: 1 }}
+                                exit={{ width: 0, opacity: 0 }}
+                                transition={{ duration: 0.3 }}
                             >
-                                <div style={styles.activityIcon}>
-                                    {activity.type === 'create' && '➕'}
-                                    {activity.type === 'update' && '✏️'}
-                                    {activity.type === 'move' && '🔄'}
-                                    {activity.type === 'delete' && '🗑️'}
+                                <div style={styles.activityHeader}>
+                                    <h3 style={styles.activityTitle}>Live Activity</h3>
+                                    <button
+                                        style={styles.activityClose}
+                                        onClick={() => setIsActivityOpen(false)}
+                                    >
+                                        <X size={16} />
+                                    </button>
                                 </div>
-                                <div style={styles.activityContent}>
-                                    <p style={styles.activityText}>
-                                        <strong>{activity.taskTitle}</strong> {activity.type === 'move'
-                                            ? `moved to ${activity.newStatus}`
-                                            : `${activity.type}d`}
-                                    </p>
-                                    <p style={styles.activityTime}>
-                                        {format(new Date(activity.timestamp), 'HH:mm')}
-                                    </p>
+                                <div style={styles.activityList}>
+                                    {activityLog.length === 0 ? (
+                                        <p style={styles.noActivity}>No recent activity</p>
+                                    ) : (
+                                        activityLog.map(activity => (
+                                            <motion.div
+                                                key={activity.id}
+                                                style={styles.activityItem}
+                                                initial={{ opacity: 0, x: 20 }}
+                                                animate={{ opacity: 1, x: 0 }}
+                                            >
+                                                <div style={styles.activityIcon}>
+                                                    {activity.type === 'create' && '➕'}
+                                                    {activity.type === 'update' && '✏️'}
+                                                    {activity.type === 'move' && '🔄'}
+                                                    {activity.type === 'delete' && '🗑️'}
+                                                </div>
+                                                <div style={styles.activityContent}>
+                                                    <p style={styles.activityText}>
+                                                        <strong>{activity.taskTitle}</strong> {activity.type === 'move'
+                                                            ? `moved to ${activity.newStatus}`
+                                                            : `${activity.type}d`}
+                                                    </p>
+                                                    <p style={styles.activityTime}>
+                                                        {format(new Date(activity.timestamp), 'HH:mm')}
+                                                    </p>
+                                                </div>
+                                            </motion.div>
+                                        ))
+                                    )}
                                 </div>
                             </motion.div>
-                        ))}
-                    </div>
-                </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
             </div>
 
             {/* Task Modal */}
@@ -1002,7 +1054,7 @@ function KanbanBoard() {
                             </div>
 
                             <div style={styles.detailContent}>
-                                <p style={styles.detailDescription}>{selectedTask.description}</p>
+                                <p style={styles.detailDescription}>{selectedTask.description || 'No description'}</p>
 
                                 <div style={styles.detailMeta}>
                                     <div style={styles.detailMetaItem}>
@@ -1032,17 +1084,21 @@ function KanbanBoard() {
                                 <div style={styles.commentsSection}>
                                     <h3 style={styles.commentsTitle}>Comments</h3>
                                     <div style={styles.commentsList}>
-                                        {comments.map(comment => (
-                                            <div key={comment.id} style={styles.commentItem}>
-                                                <div style={styles.commentHeader}>
-                                                    <span style={styles.commentAuthor}>User</span>
-                                                    <span style={styles.commentTime}>
-                                                        {format(new Date(comment.createdAt), 'MMM d, HH:mm')}
-                                                    </span>
+                                        {comments.length === 0 ? (
+                                            <p style={styles.noComments}>No comments yet</p>
+                                        ) : (
+                                            comments.map(comment => (
+                                                <div key={comment.id} style={styles.commentItem}>
+                                                    <div style={styles.commentHeader}>
+                                                        <span style={styles.commentAuthor}>User</span>
+                                                        <span style={styles.commentTime}>
+                                                            {format(new Date(comment.createdAt), 'MMM d, HH:mm')}
+                                                        </span>
+                                                    </div>
+                                                    <p style={styles.commentText}>{comment.text}</p>
                                                 </div>
-                                                <p style={styles.commentText}>{comment.text}</p>
-                                            </div>
-                                        ))}
+                                            ))
+                                        )}
                                     </div>
 
                                     <div style={styles.commentInput}>
@@ -1062,6 +1118,26 @@ function KanbanBoard() {
                                         </button>
                                     </div>
                                 </div>
+
+                                {/* Attachments Section */}
+                                {selectedTask.attachments?.length > 0 && (
+                                    <div style={styles.attachmentsSection}>
+                                        <h3 style={styles.commentsTitle}>Attachments</h3>
+                                        <div style={styles.previewContainer}>
+                                            {selectedTask.attachments.map((file, i) => (
+                                                <div key={i} style={styles.previewItem}>
+                                                    {file.type?.startsWith('image/') ? (
+                                                        <img src={file.url} alt={file.name} style={styles.thumb} />
+                                                    ) : (
+                                                        <div style={styles.docThumb}>
+                                                            {file.name?.split('.').pop()}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </motion.div>
                     </motion.div>
@@ -1089,13 +1165,12 @@ const selectStyles = {
 
 const styles = {
     container: {
-        padding: '24px',
-        background: '#ffffff',
+        padding: 'clamp(12px, 3vw, 24px)',
+        background: '#f8fafc',
         minHeight: '100vh',
         color: '#1e293b',
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        position: 'relative',
-        paddingRight: '320px' // Space for activity feed
+        position: 'relative'
     },
     loadingContainer: {
         display: 'flex',
@@ -1113,20 +1188,37 @@ const styles = {
         borderTopColor: '#4f46e5',
         borderRadius: '50%'
     },
+    connectionBanner: {
+        background: '#f59e0b',
+        color: 'white',
+        padding: '8px',
+        textAlign: 'center',
+        borderRadius: '8px',
+        marginBottom: '16px',
+        fontSize: '14px'
+    },
     header: {
         display: 'flex',
+        flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
         marginBottom: '24px',
-        padding: '16px 0'
+        padding: '8px 0',
+        flexWrap: 'wrap',
+        gap: '16px',
+        '@media (max-width: 768px)': {
+            flexDirection: 'column',
+            alignItems: 'flex-start'
+        }
     },
     headerLeft: {
         display: 'flex',
         alignItems: 'center',
-        gap: '12px'
+        gap: '12px',
+        flexWrap: 'wrap'
     },
     title: {
-        fontSize: '1.8rem',
+        fontSize: 'clamp(1.5rem, 4vw, 1.8rem)',
         fontWeight: '700',
         margin: 0,
         background: 'linear-gradient(135deg, #4f46e5 0%, #818cf8 100%)',
@@ -1141,16 +1233,21 @@ const styles = {
         background: '#f1f5f9',
         borderRadius: '20px',
         fontSize: '0.875rem',
-        color: '#475569'
+        color: '#475569',
+        whiteSpace: 'nowrap'
     },
     headerRight: {
         display: 'flex',
         alignItems: 'center',
-        gap: '12px'
+        gap: '8px',
+        flexWrap: 'wrap'
     },
     searchContainer: {
         position: 'relative',
-        width: '300px'
+        width: 'clamp(200px, 30vw, 300px)',
+        '@media (max-width: 480px)': {
+            width: '100%'
+        }
     },
     searchIcon: {
         position: 'absolute',
@@ -1206,11 +1303,40 @@ const styles = {
         justifyContent: 'center',
         transition: 'all 0.2s'
     },
+    activityToggle: {
+        position: 'relative',
+        padding: '10px',
+        background: 'white',
+        border: '1px solid #e2e8f0',
+        borderRadius: '8px',
+        cursor: 'pointer',
+        color: '#64748b',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'all 0.2s',
+        ':hover': {
+            background: '#f8fafc',
+            borderColor: '#cbd5e1'
+        }
+    },
+    activityBadge: {
+        position: 'absolute',
+        top: '-5px',
+        right: '-5px',
+        background: '#ef4444',
+        color: 'white',
+        fontSize: '10px',
+        padding: '2px 4px',
+        borderRadius: '10px',
+        minWidth: '16px',
+        textAlign: 'center'
+    },
     addButton: {
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
-        padding: '10px 20px',
+        padding: '10px 16px',
         background: '#4f46e5',
         color: 'white',
         border: 'none',
@@ -1218,6 +1344,11 @@ const styles = {
         fontWeight: '600',
         cursor: 'pointer',
         transition: 'all 0.2s',
+        whiteSpace: 'nowrap',
+        '@media (max-width: 480px)': {
+            width: '100%',
+            justifyContent: 'center'
+        },
         ':hover': {
             background: '#4338ca',
             transform: 'translateY(-2px)',
@@ -1230,29 +1361,34 @@ const styles = {
     },
     filtersContent: {
         padding: '16px',
-        background: '#f8fafc',
+        background: 'white',
         borderRadius: '12px',
         display: 'flex',
-        gap: '16px'
+        gap: '16px',
+        flexWrap: 'wrap',
+        '@media (max-width: 640px)': {
+            flexDirection: 'column'
+        }
     },
     filterGroup: {
-        flex: 1
+        flex: '1 1 200px',
+        minWidth: '200px'
     },
     metricsContainer: {
         display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: '16px',
         marginBottom: '24px'
     },
     metricCard: {
-        padding: '20px',
+        padding: '16px',
         background: 'white',
         borderRadius: '12px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
         border: '1px solid #e2e8f0',
         display: 'flex',
         alignItems: 'center',
-        gap: '16px'
+        gap: '12px'
     },
     metricIcon: {
         width: '48px',
@@ -1260,10 +1396,11 @@ const styles = {
         borderRadius: '12px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center'
+        justifyContent: 'center',
+        flexShrink: 0
     },
     metricValue: {
-        fontSize: '1.5rem',
+        fontSize: 'clamp(1.2rem, 2vw, 1.5rem)',
         fontWeight: '700',
         color: '#1e293b',
         lineHeight: '1.2'
@@ -1274,12 +1411,12 @@ const styles = {
     },
     chartsRow: {
         display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
         gap: '16px',
         marginBottom: '24px'
     },
     chartCard: {
-        padding: '20px',
+        padding: '16px',
         background: 'white',
         borderRadius: '12px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
@@ -1291,19 +1428,31 @@ const styles = {
         fontWeight: '600',
         color: '#475569'
     },
+    mainContent: {
+        display: 'flex',
+        gap: '20px',
+        position: 'relative'
+    },
+    boardWrapper: {
+        transition: 'width 0.3s ease',
+        overflowX: 'auto'
+    },
     board: {
         display: 'flex',
         gap: '20px',
-        overflowX: 'auto',
-        padding: '4px 0 20px 0'
+        padding: '4px 0 20px 0',
+        minWidth: 'min-content'
     },
     column: {
-        flex: '0 0 320px',
+        flex: '0 0 300px',
         background: '#f8fafc',
         borderRadius: '12px',
         padding: '16px',
         border: '2px solid #e2e8f0',
-        transition: 'border-color 0.2s'
+        transition: 'border-color 0.2s',
+        '@media (max-width: 768px)': {
+            flex: '0 0 280px'
+        }
     },
     columnHeader: {
         marginBottom: '16px'
@@ -1326,47 +1475,49 @@ const styles = {
         color: '#475569'
     },
     taskList: {
-        minHeight: '500px'
+        minHeight: '400px'
     },
     taskCard: {
         background: 'white',
         borderRadius: '8px',
-        padding: '16px',
+        padding: '12px',
         marginBottom: '12px',
         cursor: 'grab',
         border: '1px solid #e2e8f0',
-        transition: 'all 0.2s'
+        transition: 'all 0.2s',
+        userSelect: 'none'
     },
     taskHeader: {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'flex-start',
-        marginBottom: '12px'
+        marginBottom: '8px'
     },
     taskBadges: {
         display: 'flex',
-        gap: '8px'
+        gap: '6px',
+        flexWrap: 'wrap'
     },
     priorityBadge: {
-        padding: '4px 8px',
+        padding: '2px 6px',
         borderRadius: '12px',
-        fontSize: '0.7rem',
+        fontSize: '0.65rem',
         fontWeight: '600',
         color: 'white',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '4px'
+        gap: '2px'
     },
     categoryBadge: {
-        padding: '4px 8px',
+        padding: '2px 6px',
         background: '#e2e8f0',
         borderRadius: '12px',
-        fontSize: '0.7rem',
+        fontSize: '0.65rem',
         fontWeight: '600',
         color: '#475569',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '4px'
+        gap: '2px'
     },
     taskMenuButton: {
         padding: '4px',
@@ -1381,22 +1532,23 @@ const styles = {
         }
     },
     taskTitle: {
-        margin: '0 0 8px 0',
+        margin: '0 0 6px 0',
         fontSize: '0.95rem',
         fontWeight: '600',
         color: '#1e293b'
     },
     taskDescription: {
-        margin: '0 0 12px 0',
-        fontSize: '0.85rem',
+        margin: '0 0 8px 0',
+        fontSize: '0.8rem',
         color: '#64748b',
         lineHeight: '1.4'
     },
     taskMeta: {
         display: 'flex',
         gap: '12px',
-        fontSize: '0.8rem',
-        color: '#94a3b8'
+        fontSize: '0.75rem',
+        color: '#94a3b8',
+        flexWrap: 'wrap'
     },
     metaItem: {
         display: 'flex',
@@ -1404,50 +1556,137 @@ const styles = {
         gap: '4px'
     },
     activityFeed: {
-        position: 'fixed',
-        right: 0,
-        top: 0,
-        bottom: 0,
-        width: '300px',
         background: 'white',
-        borderLeft: '1px solid #e2e8f0',
-        padding: '24px 16px',
-        overflowY: 'auto',
-        boxShadow: '-4px 0 12px rgba(0,0,0,0.05)'
+        borderRadius: '12px',
+        border: '1px solid #e2e8f0',
+        padding: '16px',
+        overflow: 'hidden',
+        height: 'fit-content',
+        position: 'sticky',
+        top: '20px',
+        '@media (max-width: 1024px)': {
+            position: 'fixed',
+            right: '0',
+            top: '0',
+            bottom: '0',
+            zIndex: 100,
+            borderRadius: '12px 0 0 12px',
+            boxShadow: '-4px 0 12px rgba(0,0,0,0.1)'
+        }
+    },
+    activityHeader: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '16px'
     },
     activityTitle: {
-        margin: '0 0 20px 0',
+        margin: 0,
         fontSize: '1rem',
         fontWeight: '600',
         color: '#1e293b'
     },
+    activityClose: {
+        padding: '4px',
+        background: 'transparent',
+        border: 'none',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        color: '#64748b',
+        display: 'none',
+        '@media (max-width: 1024px)': {
+            display: 'block'
+        },
+        ':hover': {
+            background: '#f1f5f9'
+        }
+    },
     activityList: {
         display: 'flex',
         flexDirection: 'column',
-        gap: '16px'
+        gap: '12px',
+        maxHeight: 'calc(100vh - 200px)',
+        overflowY: 'auto'
     },
     activityItem: {
         display: 'flex',
         gap: '12px',
-        padding: '12px',
+        padding: '10px',
         background: '#f8fafc',
-        borderRadius: '8px'
+        borderRadius: '8px',
+        fontSize: '0.85rem'
     },
     activityIcon: {
-        fontSize: '1.2rem'
+        fontSize: '1rem'
     },
     activityContent: {
         flex: 1
     },
     activityText: {
-        margin: '0 0 4px 0',
-        fontSize: '0.9rem',
+        margin: '0 0 2px 0',
+        fontSize: '0.85rem',
         color: '#334155'
     },
     activityTime: {
         margin: 0,
-        fontSize: '0.75rem',
+        fontSize: '0.7rem',
         color: '#94a3b8'
+    },
+    noActivity: {
+        textAlign: 'center',
+        color: '#94a3b8',
+        fontSize: '0.9rem',
+        padding: '20px'
+    },
+    listView: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px'
+    },
+    listItem: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '16px',
+        background: 'white',
+        borderRadius: '8px',
+        border: '1px solid #e2e8f0',
+        cursor: 'pointer',
+        transition: 'all 0.2s',
+        ':hover': {
+            borderColor: '#4f46e5'
+        }
+    },
+    listItemLeft: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        flex: 1
+    },
+    listPriorityDot: {
+        width: '8px',
+        height: '8px',
+        borderRadius: '50%',
+        flexShrink: 0
+    },
+    listItemRight: {
+        display: 'flex',
+        gap: '12px',
+        alignItems: 'center'
+    },
+    listStatus: {
+        padding: '4px 8px',
+        background: '#f1f5f9',
+        borderRadius: '12px',
+        fontSize: '0.75rem',
+        color: '#475569'
+    },
+    listCategory: {
+        padding: '4px 8px',
+        background: '#e2e8f0',
+        borderRadius: '12px',
+        fontSize: '0.75rem',
+        color: '#475569'
     },
     modalOverlay: {
         position: 'fixed',
@@ -1457,14 +1696,15 @@ const styles = {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 1000
+        zIndex: 1000,
+        padding: '16px'
     },
     modal: {
         background: 'white',
         borderRadius: '16px',
-        padding: '24px',
+        padding: 'clamp(16px, 4vw, 24px)',
         width: '500px',
-        maxWidth: '90vw',
+        maxWidth: '100%',
         maxHeight: '90vh',
         overflowY: 'auto',
         boxShadow: '0 20px 40px rgba(0,0,0,0.2)'
@@ -1473,7 +1713,7 @@ const styles = {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: '24px'
+        marginBottom: '20px'
     },
     modalTitle: {
         margin: 0,
@@ -1492,13 +1732,16 @@ const styles = {
         }
     },
     formGroup: {
-        marginBottom: '20px'
+        marginBottom: '16px'
     },
     formRow: {
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
         gap: '12px',
-        marginBottom: '20px'
+        marginBottom: '16px',
+        '@media (max-width: 480px)': {
+            gridTemplateColumns: '1fr'
+        }
     },
     label: {
         display: 'block',
@@ -1536,7 +1779,7 @@ const styles = {
     dropzone: {
         border: '2px dashed #e2e8f0',
         borderRadius: '8px',
-        padding: '24px',
+        padding: '20px',
         textAlign: 'center',
         cursor: 'pointer',
         transition: 'all 0.2s',
@@ -1558,7 +1801,7 @@ const styles = {
         display: 'flex',
         flexWrap: 'wrap',
         gap: '8px',
-        marginTop: '12px'
+        marginTop: '8px'
     },
     previewItem: {
         position: 'relative',
@@ -1606,25 +1849,29 @@ const styles = {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginTop: '24px',
+        marginTop: '20px',
         paddingTop: '16px',
-        borderTop: '1px solid #e2e8f0'
+        borderTop: '1px solid #e2e8f0',
+        flexWrap: 'wrap',
+        gap: '12px'
     },
     modalFooterRight: {
         display: 'flex',
-        gap: '12px'
+        gap: '8px',
+        marginLeft: 'auto'
     },
     button: {
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '8px',
-        padding: '10px 16px',
+        gap: '6px',
+        padding: '8px 16px',
         borderRadius: '8px',
-        fontSize: '0.95rem',
+        fontSize: '0.9rem',
         fontWeight: '500',
         border: 'none',
         cursor: 'pointer',
-        transition: 'all 0.2s'
+        transition: 'all 0.2s',
+        whiteSpace: 'nowrap'
     },
     saveButton: {
         background: '#4f46e5',
@@ -1648,40 +1895,51 @@ const styles = {
         }
     },
     detailContent: {
-        padding: '16px 0'
+        padding: '8px 0'
     },
     detailDescription: {
-        margin: '0 0 24px 0',
+        margin: '0 0 20px 0',
         lineHeight: '1.6',
         color: '#475569'
     },
     detailMeta: {
         display: 'grid',
-        gridTemplateColumns: 'repeat(2, 1fr)',
-        gap: '16px',
-        marginBottom: '24px',
-        padding: '16px',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+        gap: '12px',
+        marginBottom: '20px',
+        padding: '12px',
         background: '#f8fafc',
         borderRadius: '8px'
     },
     detailMetaItem: {
-        fontSize: '0.95rem',
-        color: '#1e293b'
+        fontSize: '0.9rem',
+        color: '#1e293b',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        flexWrap: 'wrap'
     },
     commentsSection: {
-        marginTop: '24px'
+        marginTop: '20px'
     },
     commentsTitle: {
-        margin: '0 0 16px 0',
+        margin: '0 0 12px 0',
         fontSize: '1rem',
         fontWeight: '600',
         color: '#1e293b'
     },
     commentsList: {
-        marginBottom: '16px'
+        marginBottom: '16px',
+        maxHeight: '300px',
+        overflowY: 'auto'
+    },
+    noComments: {
+        textAlign: 'center',
+        color: '#94a3b8',
+        padding: '20px'
     },
     commentItem: {
-        padding: '12px',
+        padding: '10px',
         background: '#f8fafc',
         borderRadius: '8px',
         marginBottom: '8px'
@@ -1693,7 +1951,7 @@ const styles = {
         marginBottom: '4px'
     },
     commentAuthor: {
-        fontSize: '0.85rem',
+        fontSize: '0.8rem',
         fontWeight: '600',
         color: '#1e293b'
     },
@@ -1703,7 +1961,7 @@ const styles = {
     },
     commentText: {
         margin: 0,
-        fontSize: '0.9rem',
+        fontSize: '0.85rem',
         color: '#475569'
     },
     commentInput: {
@@ -1712,7 +1970,7 @@ const styles = {
     },
     commentField: {
         flex: 1,
-        padding: '10px 12px',
+        padding: '8px 12px',
         border: '1px solid #e2e8f0',
         borderRadius: '8px',
         fontSize: '0.9rem',
@@ -1722,7 +1980,7 @@ const styles = {
         }
     },
     commentButton: {
-        padding: '10px 16px',
+        padding: '8px 16px',
         background: '#4f46e5',
         color: 'white',
         border: 'none',
@@ -1733,7 +1991,32 @@ const styles = {
         ':hover': {
             background: '#4338ca'
         }
+    },
+    attachmentsSection: {
+        marginTop: '20px'
     }
 };
+
+// Add media queries via style element
+const mediaQueryStyles = `
+    @media (max-width: 768px) {
+        .add-button-text {
+            display: none;
+        }
+    }
+    
+    @media (max-width: 640px) {
+        [style*="container"] {
+            padding: 12px;
+        }
+    }
+`;
+
+// Inject media queries
+if (typeof document !== 'undefined') {
+    const style = document.createElement('style');
+    style.textContent = mediaQueryStyles;
+    document.head.appendChild(style);
+}
 
 export default KanbanBoard;
