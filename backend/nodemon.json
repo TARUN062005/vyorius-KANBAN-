@@ -1,0 +1,10 @@
+{
+    "watch": [
+        "server.js"
+    ],
+    "ext": "js,json",
+    "ignore": [
+        "../frontend/*",
+        "node_modules/*"
+    ]
+}
