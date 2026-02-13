@@ -3,6 +3,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -16,39 +18,67 @@ const io = new Server(server, {
     credentials: true
   },
   pingTimeout: 60000,
+  maxHttpBufferSize: 50 * 1024 * 1024, // 50MB
   transports: ['websocket', 'polling']
 });
 
-// In-memory storage with persistence simulation
-let tasks = [];
-let users = new Map(); // Track connected users
+// Data persistence
+const DATA_DIR = path.join(__dirname, 'data');
+const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
+const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
 
-// Activity log for real-time updates
-let activityLog = [];
+// Ensure data directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR);
+}
 
-// Helper to maintain column order
-const maintainColumnOrder = (tasksArray) => {
-  // Sort tasks within each column by creation date or a custom order
-  // For simplicity, we'll just return as-is, but you could implement
-  // a more sophisticated ordering system here
-  return tasksArray;
+// Helper functions for persistence
+const loadData = () => {
+  let tasks = [];
+  let activityLog = [];
+
+  try {
+    if (fs.existsSync(TASKS_FILE)) {
+      const data = fs.readFileSync(TASKS_FILE, 'utf8');
+      tasks = JSON.parse(data);
+    }
+    if (fs.existsSync(ACTIVITY_FILE)) {
+      const data = fs.readFileSync(ACTIVITY_FILE, 'utf8');
+      activityLog = JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Error loading data:', err);
+  }
+
+  return { tasks, activityLog };
 };
+
+const saveData = (tasks, activityLog) => {
+  try {
+    fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
+    fs.writeFileSync(ACTIVITY_FILE, JSON.stringify(activityLog, null, 2));
+  } catch (err) {
+    console.error('Error saving data:', err);
+  }
+};
+
+// Initialize data
+let { tasks, activityLog } = loadData();
+console.log(`Loaded ${tasks.length} tasks and ${activityLog.length} activities from file.`);
+let users = new Map();
 
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
-  // Register user
   users.set(socket.id, {
     id: socket.id,
     connectedAt: new Date().toISOString()
   });
 
   // Send initial data
-  socket.emit("sync:tasks", maintainColumnOrder(tasks));
-  socket.emit("sync:activity", activityLog.slice(-20)); // Last 20 activities
+  socket.emit("sync:tasks", tasks);
+  socket.emit("sync:activity", activityLog.slice(0, 50)); // Send first 50 (most recent)
   socket.emit("users:online", Array.from(users.values()));
-
-  // Broadcast updated user count
   io.emit("users:count", users.size);
 
   // Task Creation
@@ -61,12 +91,10 @@ io.on("connection", (socket) => {
       attachments: taskData.attachments || [],
       comments: [],
       assignedTo: taskData.assignedTo || null,
-      dueDate: taskData.dueDate || null,
-      order: tasks.length // Simple order field
+      dueDate: taskData.dueDate || null
     };
     tasks.push(newTask);
 
-    // Add to activity log
     const activity = {
       id: uuidv4(),
       type: 'create',
@@ -75,8 +103,10 @@ io.on("connection", (socket) => {
       userId: socket.id,
       timestamp: new Date().toISOString()
     };
-    activityLog.push(activity);
-    if (activityLog.length > 100) activityLog.shift(); // Keep last 100
+    activityLog.unshift(activity); // Add to beginning
+    if (activityLog.length > 100) activityLog = activityLog.slice(0, 100);
+
+    saveData(tasks, activityLog);
 
     io.emit("task:create", newTask);
     io.emit("activity:new", activity);
@@ -86,11 +116,7 @@ io.on("connection", (socket) => {
   socket.on("task:update", (updatedTask) => {
     const index = tasks.findIndex((t) => t.id === updatedTask.id);
     if (index !== -1) {
-      tasks[index] = {
-        ...tasks[index],
-        ...updatedTask,
-        updatedAt: new Date().toISOString()
-      };
+      tasks[index] = { ...tasks[index], ...updatedTask, updatedAt: new Date().toISOString() };
 
       const activity = {
         id: uuidv4(),
@@ -100,66 +126,52 @@ io.on("connection", (socket) => {
         userId: socket.id,
         timestamp: new Date().toISOString()
       };
-      activityLog.push(activity);
-      if (activityLog.length > 100) activityLog.shift();
+      activityLog.unshift(activity);
+      if (activityLog.length > 100) activityLog = activityLog.slice(0, 100);
+
+      saveData(tasks, activityLog);
 
       io.emit("task:update", tasks[index]);
       io.emit("activity:new", activity);
     }
   });
 
-  // Explicit sync request handler
-  socket.on("sync:tasks", () => {
-    socket.emit("sync:tasks", maintainColumnOrder(tasks));
-  });
-
-  // Task Move with proper reordering
-  socket.on("task:move", ({ id, status, sourceIndex, destinationIndex, sourceColumn, destinationColumn }) => {
+  // Task Move
+  socket.on("task:move", ({ id, status, destinationIndex }) => {
     const taskIndex = tasks.findIndex((t) => t.id === id);
     if (taskIndex === -1) return;
 
     const task = tasks[taskIndex];
     const oldStatus = task.status;
-    
-    // Remove task from array
+
+    // 1. Remove task from current position logic
     tasks.splice(taskIndex, 1);
-    
-    // Update status
+
+    // 2. Update status
     task.status = status;
     task.updatedAt = new Date().toISOString();
-    
-    // Find insertion point based on destination column
-    if (sourceColumn === destinationColumn) {
-      // Reordering within same column
-      const columnTasks = tasks.filter(t => t.status === status);
-      const insertAtIndex = Math.min(destinationIndex, columnTasks.length);
-      
-      // Find position in main array
-      let insertPos = 0;
-      let count = 0;
-      for (let i = 0; i < tasks.length; i++) {
-        if (tasks[i].status === status) {
-          if (count === insertAtIndex) {
-            insertPos = i;
-            break;
-          }
-          count++;
-        }
-        insertPos = i + 1;
-      }
-      
-      tasks.splice(insertPos, 0, task);
+
+    // 3. Find insertion point in main array
+    // Filter tasks by the *destination* status to replicate the frontend's visual list
+    const destColumnTasks = tasks.filter(t => t.status === status);
+
+    let insertPos = 0;
+    if (destColumnTasks.length === 0) {
+      insertPos = tasks.length;
+    } else if (destinationIndex >= destColumnTasks.length) {
+      // Insert after the last task of this status
+      const lastTask = destColumnTasks[destColumnTasks.length - 1];
+      insertPos = tasks.findIndex(t => t.id === lastTask.id) + 1;
     } else {
-      // Moving to different column - append at end of destination column
-      let insertPos = tasks.length;
-      for (let i = tasks.length - 1; i >= 0; i--) {
-        if (tasks[i].status === status) {
-          insertPos = i + 1;
-          break;
-        }
-      }
-      tasks.splice(insertPos, 0, task);
+      // Insert before the task at destinationIndex
+      const refTask = destColumnTasks[destinationIndex];
+      insertPos = tasks.findIndex(t => t.id === refTask.id);
     }
+
+    // Handle edge case where findIndex might fail (shouldn't happen but safe to default to end)
+    if (insertPos === -1) insertPos = tasks.length;
+
+    tasks.splice(insertPos, 0, task);
 
     const activity = {
       id: uuidv4(),
@@ -171,42 +183,41 @@ io.on("connection", (socket) => {
       userId: socket.id,
       timestamp: new Date().toISOString()
     };
-    activityLog.push(activity);
-    if (activityLog.length > 100) activityLog.shift();
+    activityLog.unshift(activity);
+    if (activityLog.length > 100) activityLog = activityLog.slice(0, 100);
 
-    io.emit("task:move", {
-      task: task,
-      sourceIndex,
-      destinationIndex,
-      sourceColumn,
-      destinationColumn
-    });
+    saveData(tasks, activityLog);
+
+    // Emit FULL sync to ensure order consistency across all clients
+    io.emit("sync:tasks", tasks);
     io.emit("activity:new", activity);
   });
 
   // Task Delete
   socket.on("task:delete", (taskId) => {
-    const deletedTask = tasks.find(t => t.id === taskId);
-    tasks = tasks.filter((t) => t.id !== taskId);
+    const taskToDelete = tasks.find(t => t.id === taskId);
+    if (taskToDelete) {
+      tasks = tasks.filter(t => t.id !== taskId);
 
-    if (deletedTask) {
       const activity = {
         id: uuidv4(),
         type: 'delete',
-        taskId: deletedTask.id,
-        taskTitle: deletedTask.title,
+        taskId: taskToDelete.id,
+        taskTitle: taskToDelete.title,
         userId: socket.id,
         timestamp: new Date().toISOString()
       };
-      activityLog.push(activity);
-      if (activityLog.length > 100) activityLog.shift();
+      activityLog.unshift(activity);
+      if (activityLog.length > 100) activityLog = activityLog.slice(0, 100);
+
+      saveData(tasks, activityLog);
 
       io.emit("task:delete", taskId);
       io.emit("activity:new", activity);
     }
   });
 
-  // Add comment to task
+  // Add comment
   socket.on("task:comment", ({ taskId, comment }) => {
     const index = tasks.findIndex((t) => t.id === taskId);
     if (index !== -1) {
@@ -220,17 +231,10 @@ io.on("connection", (socket) => {
       if (!tasks[index].comments) tasks[index].comments = [];
       tasks[index].comments.push(newComment);
 
+      saveData(tasks, activityLog);
+
       io.emit("task:comment", { taskId, comment: newComment });
     }
-  });
-
-  // Bulk operations
-  socket.on("tasks:bulk-update", (updatedTasks) => {
-    tasks = tasks.map(task => {
-      const updated = updatedTasks.find(ut => ut.id === task.id);
-      return updated || task;
-    });
-    io.emit("sync:tasks", maintainColumnOrder(tasks));
   });
 
   socket.on("disconnect", () => {
@@ -241,7 +245,6 @@ io.on("connection", (socket) => {
   });
 });
 
-// REST API endpoints for file uploads
 app.post("/api/upload", (req, res) => {
   try {
     const { files } = req.body;
@@ -260,7 +263,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 WebSocket server ready for connections`);

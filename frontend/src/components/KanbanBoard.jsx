@@ -132,9 +132,7 @@ function KanbanBoard() {
             setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
         };
 
-        const handleTaskMove = ({ task }) => {
-            setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t));
-        };
+
 
         const handleTaskDelete = (taskId) => {
             setTasks(prev => prev.filter(t => t.id !== taskId));
@@ -150,7 +148,7 @@ function KanbanBoard() {
         socket.on('activity:new', handleActivityNew);
         socket.on('task:create', handleTaskCreate);
         socket.on('task:update', handleTaskUpdate);
-        socket.on('task:move', handleTaskMove);
+
         socket.on('task:delete', handleTaskDelete);
 
         return () => {
@@ -163,8 +161,20 @@ function KanbanBoard() {
             socket.off('activity:new', handleActivityNew);
             socket.off('task:create', handleTaskCreate);
             socket.off('task:update', handleTaskUpdate);
-            socket.off('task:move', handleTaskMove);
+
             socket.off('task:delete', handleTaskDelete);
+            socket.disconnect();
+        };
+    }, []);
+
+    // Force disconnection on page unload
+    useEffect(() => {
+        const handleUnload = () => {
+            socket.disconnect();
+        };
+        window.addEventListener('beforeunload', handleUnload);
+        return () => {
+            window.removeEventListener('beforeunload', handleUnload);
         };
     }, []);
 
