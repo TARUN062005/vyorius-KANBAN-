@@ -11,7 +11,7 @@ Built as a modern, real-time collaborative prototype demonstrating production-st
 Experience the live application deployed on Vercel (Frontend) and Render (Backend):
 
 **Live Application URL:**  
-[https://kanban-9o8c.vercel.app](https://kanban-9o8c.vercel.app)
+[https://kanban-alpha-topaz.vercel.app/](https://kanban-alpha-topaz.vercel.app/)
 
 *(Note: The backend is hosted on Render's free tier. Please allow up to 60 seconds for the initial connection if the server has spun down due to inactivity.)*
 
