@@ -16,15 +16,7 @@ import { toast, Toaster } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
 
-// Socket connection configuration moved inside component
-const SOCKET_CONFIG = {
-    transports: ['websocket', 'polling'],
-    reconnection: true,
-    reconnectionAttempts: 10,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
-    timeout: 20000
-};
+
 
 const COLUMNS = [
     { id: 'To Do', title: 'To Do', color: '#3b82f6', icon: '📋' },
@@ -86,12 +78,15 @@ function KanbanBoard() {
     // Socket event handlers
     useEffect(() => {
         // Initialize socket connection
-        socketRef.current = io(
-  import.meta.env.VITE_API_URL || "http://localhost:5000",
-  {
-    transports: ["websocket", "polling"],
-  }
-);
+        const socketUrl = import.meta.env.VITE_API_URL || "http://localhost:5000";
+        socketRef.current = io(socketUrl, {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            timeout: 20000
+        });
 
         const socket = socketRef.current;
 
