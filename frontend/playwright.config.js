@@ -2,13 +2,28 @@
 import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
-  testDir: "./tests/e2e", // Path to your test files
-  timeout: 20 * 1000, // Test timeout in milliseconds
-  use: {
-    headless: false, // Run tests in headless mode
-    baseURL: "http://localhost:3000", // Replace with your app's base URL
-    viewport: { width: 1300, height: 720 }, // Default viewport
+  testDir: "./src/tests/e2e",
+
+  timeout: 30 * 1000,
+
+  expect: {
+    timeout: 5000,
   },
+
+  fullyParallel: true,
+
+  retries: 0,
+
+  reporter: "list",
+
+  use: {
+    baseURL: "http://localhost:3000",
+    headless: true,
+    viewport: { width: 1280, height: 720 },
+    actionTimeout: 10 * 1000,
+    navigationTimeout: 15 * 1000,
+  },
+
   projects: [
     {
       name: "chromium",
@@ -19,10 +34,11 @@ export default defineConfig({
       use: { browserName: "webkit" },
     },
   ],
+
   webServer: {
-    command: "npm run build && npm run preview", // Command to start your server
-    port: 3000, // Port your app runs on
+    command: "npm run dev",
+    url: "http://localhost:3000",
     reuseExistingServer: true,
-    timeout: 60 * 60 * 1000, // Wait time for server start in milliseconds
+    timeout: 60 * 1000,
   },
 });

@@ -86,7 +86,13 @@ function KanbanBoard() {
     // Socket event handlers
     useEffect(() => {
         // Initialize socket connection
-        socketRef.current = io('http://localhost:5000', SOCKET_CONFIG);
+        socketRef.current = io(
+  import.meta.env.VITE_API_URL || "http://localhost:5000",
+  {
+    transports: ["websocket", "polling"],
+  }
+);
+
         const socket = socketRef.current;
 
         const handleConnect = () => {
