@@ -30,7 +30,7 @@ The system follows a decoupling **Client-Server architecture** centered around e
 5.  **Broadcast**: The server broadcasts the update event to **all other connected clients**.
 6.  **Client Synchronization**: Other clients receive the event and update their local state instantly, keeping everyone in sync.
 
-This architecture ensures high availability and responsiveness, mimicking the experience of enterprise tools like Trello or Jira.
+This architecture ensures responsive real-time synchronization across connected clients.
 
 ### Collaboration Model
 This application provides a shared real-time board visible to all connected users. There are no user accounts or private workspaces in the current version; everyone collaborates on the same dataset.
@@ -99,15 +99,15 @@ The frontend is a **Single Page Application (SPA)** built with **React** and **V
 
 ## ⚙️ Backend Architecture
 
-The backend is a lightweight, high-throughput **Node.js** server utilizing **Express** and **Socket.IO**.
+The backend is a lightweight Node.js server designed for real-time event handling utilizing **Express** and **Socket.IO**.
 
 ### Core Responsibilities
 
 1.  **WebSocket Server**: Designed to support multiple concurrent users on a single server instance.
-2.  **Persistence Layer**: Utilizing a **file-based JSON storage system** (`data/tasks.json`, `data/activity.json`). This ensures data survives server restarts without the overhead of a full database setup for this scale.
+2.  **Persistence Layer**: Utilizing a **file-based JSON storage system** (`data/tasks.json`, `data/activity.json`). This allows data persistence during runtime without requiring a database.
 3.  **Concurrency Management**: Sequential file writes reduce the likelihood of conflicts in low-traffic scenarios.
 4.  **Activity Logging**: Automatically generates audit trails for every create, update, move, or delete action.
-5.  **CORS Policy**: Configured to securely allow requests from the Vercel frontend while blocking unauthorized origins.
+5.  **CORS Policy**: Configured to allow cross-origin requests from the deployed frontend.
 
 ### Data Management
 
@@ -132,9 +132,9 @@ The backend is a lightweight, high-throughput **Node.js** server utilizing **Exp
 
 | File | Description |
 | :--- | :--- |
-| `src/main.jsx` | The React entry point.Mounts the application to the DOM. |
+| `src/main.jsx` | The React entry point. Mounts the application to the DOM. |
 | `src/App.jsx` | The root component wrapper. |
-| `src/components/KanbanBoard.jsx` | The core application logic. Handles state, sockets, drag-and-drop, and UI rendering. Only "smart" component in the app. |
+| `src/components/KanbanBoard.jsx` | The core application logic. Handles state, sockets, drag-and-drop, and UI rendering. Primary stateful controller component. |
 | `src/components/KanbanBoard.css` | Stylesheet containing CSS variables, layout rules, and responsive media queries. |
 | `src/components/KanbanCharts.jsx` | Isolated component for rendering charts. Loaded lazily to reduce bundle size. |
 | `src/tests/` | Contains all testing suites (Unit, Integration, E2E). |
@@ -247,7 +247,7 @@ The application will be available at the URL shown in the terminal (typically `h
 
 *   **Database Integration**: Migrate from JSON files to MongoDB for robust data persistence.
 *   **User Authentication**: Implement JWT-based auth to track individual user actions securely.
-*   **Rich Text Editor**: dedicated editor for task descriptions.
+*   **Rich Text Editor**: Add a dedicated editor for task descriptions.
 *   **Persistent Attachments**: Integrate AWS S3 or Cloudinary for reliable file storage.
 *   **Mobile App**: Wrap the responsive web app into a React Native container.
 
