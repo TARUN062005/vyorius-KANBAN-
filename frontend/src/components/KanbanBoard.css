@@ -1,0 +1,271 @@
+/* Container responsiveness */
+.kanban-container {
+  padding: clamp(12px, 3vw, 24px);
+  background: #f8fafc;
+  min-height: 100vh;
+  color: #1e293b;
+  font-family: 'Inter', system-ui, sans-serif;
+  position: relative;
+}
+
+/* Header responsive */
+.kanban-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 0;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 768px) {
+  .kanban-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* Header Sections */
+.header-left,
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.header-right {
+  gap: 8px;
+}
+
+/* Search container */
+.search-container {
+  position: relative;
+  width: clamp(200px, 30vw, 300px);
+}
+
+@media (max-width: 480px) {
+  .search-container {
+    width: 100%;
+  }
+}
+
+/* Buttons */
+.kanban-button {
+  transition: all 0.2s ease;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kanban-button:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+/* Add button */
+.add-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #4f46e5;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.add-button:hover {
+  background: #4338ca;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+}
+
+@media (max-width: 480px) {
+  .add-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .add-button-text {
+    display: none;
+  }
+}
+
+/* Column responsiveness */
+.kanban-column {
+  flex: 0 0 300px;
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 16px;
+  border: 2px solid #e2e8f0;
+  transition: border-color 0.2s;
+}
+
+@media (max-width: 768px) {
+  .kanban-column {
+    flex: 0 0 280px;
+  }
+}
+
+/* Modal form rows */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 480px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Activity feed mobile overlay */
+.activity-feed {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  padding: 16px;
+  overflow: hidden;
+  height: fit-content;
+  position: sticky;
+  top: 20px;
+}
+
+@media (max-width: 1024px) {
+  .activity-feed {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.1);
+    border-radius: 12px 0 0 12px;
+  }
+}
+
+.activity-close {
+  display: none;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #64748b;
+}
+
+.activity-close:hover {
+  background: #f1f5f9;
+}
+
+@media (max-width: 1024px) {
+  .activity-close {
+    display: block;
+  }
+}
+
+/* Filters */
+.filters-content {
+  padding: 16px;
+  background: white;
+  border-radius: 12px;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .filters-content {
+    flex-direction: column;
+  }
+}
+
+/* Task Card Hover */
+.task-card {
+  transition: all 0.2s;
+}
+
+.task-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.task-menu-button {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.task-card:hover .task-menu-button {
+  opacity: 1;
+}
+
+.task-menu-button:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+/* List View Item Hover */
+.list-item {
+  transition: all 0.2s;
+}
+
+.list-item:hover {
+  border-color: #4f46e5;
+  transform: translateX(4px);
+}
+
+/* Inputs Focus States */
+.kanban-input:focus,
+.kanban-textarea:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+/* Button variants */
+.btn-save:hover {
+  background: #4338ca;
+}
+
+.btn-cancel:hover {
+  background: #e2e8f0;
+}
+
+.btn-danger:hover {
+  background: #fecaca;
+}
+
+/* Filter & View buttons hover */
+.filter-btn:hover,
+.view-btn:hover,
+.activity-toggle:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.close-btn:hover {
+  background: #f1f5f9;
+}
+
+.remove-btn:hover {
+  background: #dc2626;
+}
+
+/* Screen Reader Only */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  clip: rect(0, 0, 0, 0);
+  margin: -1px;
+  border: 0;
+}

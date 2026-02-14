@@ -1,13 +1,12 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
+import './KanbanBoard.css';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import {
-    BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-    PieChart, Pie, Cell, Legend
-} from 'recharts';
 import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
 import io from 'socket.io-client';
 import { format } from 'date-fns';
+
+const KanbanCharts = lazy(() => import('./KanbanCharts'));
 import {
     Plus, Trash2, Paperclip, MessageCircle, Calendar,
     Users, BarChart3, X, Check,
@@ -17,15 +16,15 @@ import { toast, Toaster } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
 
-// Socket connection with better error handling
-const socket = io('http://localhost:5000', {
+// Socket connection configuration moved inside component
+const SOCKET_CONFIG = {
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: 10,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     timeout: 20000
-});
+};
 
 const COLUMNS = [
     { id: 'To Do', title: 'To Do', color: '#3b82f6', icon: '📋' },
@@ -50,7 +49,7 @@ const CATEGORIES = [
 
 function KanbanBoard() {
     const [tasks, setTasks] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(false);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingTask, setEditingTask] = useState(null);
     const [onlineUsers, setOnlineUsers] = useState(0);
@@ -70,6 +69,7 @@ function KanbanBoard() {
     const [isConnected, setIsConnected] = useState(true);
 
     const searchDebounceRef = useRef(null);
+    const socketRef = useRef(null);
 
     const [formData, setFormData] = useState({
         title: '',
@@ -85,6 +85,10 @@ function KanbanBoard() {
 
     // Socket event handlers
     useEffect(() => {
+        // Initialize socket connection
+        socketRef.current = io('http://localhost:5000', SOCKET_CONFIG);
+        const socket = socketRef.current;
+
         const handleConnect = () => {
             console.log('Connected to server');
             setIsConnected(true);
@@ -132,8 +136,6 @@ function KanbanBoard() {
             setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
         };
 
-
-
         const handleTaskDelete = (taskId) => {
             setTasks(prev => prev.filter(t => t.id !== taskId));
             toast.success('Task deleted');
@@ -148,7 +150,6 @@ function KanbanBoard() {
         socket.on('activity:new', handleActivityNew);
         socket.on('task:create', handleTaskCreate);
         socket.on('task:update', handleTaskUpdate);
-
         socket.on('task:delete', handleTaskDelete);
 
         return () => {
@@ -161,16 +162,16 @@ function KanbanBoard() {
             socket.off('activity:new', handleActivityNew);
             socket.off('task:create', handleTaskCreate);
             socket.off('task:update', handleTaskUpdate);
-
             socket.off('task:delete', handleTaskDelete);
-            socket.disconnect();
+
+            socket.disconnect?.();
         };
     }, []);
 
     // Force disconnection on page unload
     useEffect(() => {
         const handleUnload = () => {
-            socket.disconnect();
+            socketRef.current?.disconnect();
         };
         window.addEventListener('beforeunload', handleUnload);
         return () => {
@@ -196,7 +197,7 @@ function KanbanBoard() {
             return newTasks;
         });
 
-        socket.emit('task:move', {
+        socketRef.current?.emit('task:move', {
             id: draggableId,
             status: destination.droppableId,
             sourceIndex: source.index,
@@ -273,10 +274,10 @@ function KanbanBoard() {
         };
 
         if (editingTask) {
-            socket.emit('task:update', { ...editingTask, ...taskData });
+            socketRef.current?.emit('task:update', { ...editingTask, ...taskData });
             toast.success('Task updated');
         } else {
-            socket.emit('task:create', taskData);
+            socketRef.current?.emit('task:create', taskData);
             toast.success('Task created');
         }
 
@@ -285,7 +286,7 @@ function KanbanBoard() {
 
     const handleDelete = useCallback((id) => {
         if (window.confirm('Are you sure you want to delete this task?')) {
-            socket.emit('task:delete', id);
+            socketRef.current?.emit('task:delete', id);
             closeModal();
         }
     }, []);
@@ -333,11 +334,11 @@ function KanbanBoard() {
         const comment = {
             id: Date.now().toString(),
             text: newComment,
-            userId: socket.id,
+            userId: socketRef.current?.id,
             createdAt: new Date().toISOString()
         };
 
-        socket.emit('task:comment', {
+        socketRef.current?.emit('task:comment', {
             taskId: selectedTask.id,
             comment: newComment
         });
@@ -423,7 +424,7 @@ function KanbanBoard() {
         <>
             <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
 
-            <div style={styles.container}>
+            <div className="kanban-container" style={styles.container}>
                 {/* Connection Status */}
                 {!isConnected && (
                     <div style={styles.connectionBanner}>
@@ -433,12 +434,14 @@ function KanbanBoard() {
 
                 {/* Header */}
                 <motion.header
+                    className="kanban-header"
                     style={styles.header}
                     initial={{ y: -20, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                 >
                     <div style={styles.headerLeft}>
-                        <h1 style={styles.title}>TaskFlow</h1>
+                        <h1 style={styles.title}>Real-time Kanban Board</h1>
+                        <span className="sr-only">Kanban Board</span>
                         <div style={styles.badge}>
                             <Users size={14} />
                             <span>{onlineUsers} online</span>
@@ -446,10 +449,11 @@ function KanbanBoard() {
                     </div>
 
                     <div style={styles.headerRight}>
-                        <div style={styles.searchContainer}>
+                        <div className="search-container" style={styles.searchContainer}>
                             <Search size={18} style={styles.searchIcon} />
                             <input
                                 type="text"
+                                className="kanban-input"
                                 placeholder="Search tasks..."
                                 onChange={handleSearchChange}
                                 style={styles.searchInput}
@@ -458,6 +462,7 @@ function KanbanBoard() {
                         </div>
 
                         <button
+                            className="filter-btn"
                             style={styles.filterButton}
                             onClick={() => setShowFilters(!showFilters)}
                             aria-label="Toggle filters"
@@ -476,6 +481,7 @@ function KanbanBoard() {
                         </div>
 
                         <button
+                            className="activity-toggle"
                             style={styles.activityToggle}
                             onClick={() => setIsActivityOpen(!isActivityOpen)}
                             aria-label="Toggle activity feed"
@@ -485,6 +491,7 @@ function KanbanBoard() {
                         </button>
 
                         <motion.button
+                            className="add-button"
                             style={styles.addButton}
                             onClick={() => openModal()}
                             whileHover={{ scale: 1.05 }}
@@ -501,13 +508,14 @@ function KanbanBoard() {
                 <AnimatePresence>
                     {showFilters && (
                         <motion.div
+                            className="filters-panel"
                             style={styles.filtersPanel}
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: 'auto', opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}
                         >
-                            <div style={styles.filtersContent}>
-                                <div style={styles.filterGroup}>
+                            <div className="filters-content" style={styles.filtersContent}>
+                                <div className="filter-group" style={styles.filterGroup}>
                                     <label>Priority</label>
                                     <Select
                                         options={PRIORITIES}
@@ -518,7 +526,7 @@ function KanbanBoard() {
                                         styles={selectStyles}
                                     />
                                 </div>
-                                <div style={styles.filterGroup}>
+                                <div className="filter-group" style={styles.filterGroup}>
                                     <label>Category</label>
                                     <Select
                                         options={CATEGORIES}
@@ -536,6 +544,7 @@ function KanbanBoard() {
 
                 {/* Metrics Dashboard */}
                 <motion.div
+                    className="metrics-container"
                     style={styles.metricsContainer}
                     initial={{ y: 20, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
@@ -583,67 +592,28 @@ function KanbanBoard() {
                 </motion.div>
 
                 {/* Charts */}
-                <motion.div
-                    style={styles.chartsRow}
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: 0.2 }}
-                >
-                    <div style={styles.chartCard}>
-                        <h3 style={styles.chartTitle}>Task Distribution</h3>
-                        <ResponsiveContainer width="100%" height={200}>
-                            <BarChart data={metrics.columnData} layout="vertical">
-                                <XAxis type="number" hide />
-                                <YAxis type="category" dataKey="name" width={80} />
-                                <Tooltip
-                                    contentStyle={{ background: 'white', border: 'none', borderRadius: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}
-                                />
-                                <Bar dataKey="count">
-                                    {metrics.columnData.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={entry.color} />
-                                    ))}
-                                </Bar>
-                            </BarChart>
-                        </ResponsiveContainer>
+                <Suspense fallback={
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>
+                        Loading visualization...
                     </div>
-
-                    <div style={styles.chartCard}>
-                        <h3 style={styles.chartTitle}>Priority Breakdown</h3>
-                        <ResponsiveContainer width="100%" height={200}>
-                            <PieChart>
-                                <Pie
-                                    data={metrics.priorityData}
-                                    cx="50%"
-                                    cy="50%"
-                                    innerRadius={60}
-                                    outerRadius={80}
-                                    paddingAngle={2}
-                                    dataKey="count"
-                                >
-                                    {metrics.priorityData.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={entry.color} />
-                                    ))}
-                                </Pie>
-                                <Tooltip />
-                                <Legend />
-                            </PieChart>
-                        </ResponsiveContainer>
-                    </div>
-                </motion.div>
+                }>
+                    <KanbanCharts metrics={metrics} />
+                </Suspense>
 
                 {/* Main Content Area */}
-                <div style={styles.mainContent}>
+                <div className="main-content" style={styles.mainContent}>
                     {/* Board */}
-                    <div style={{ ...styles.boardWrapper, width: isActivityOpen ? 'calc(100% - 320px)' : '100%' }}>
+                    <div className="board-wrapper" style={{ ...styles.boardWrapper, width: isActivityOpen ? 'calc(100% - 320px)' : '100%' }}>
                         {viewMode === 'board' ? (
                             <DragDropContext onDragEnd={handleDragEnd}>
-                                <div style={styles.board}>
+                                <div className="board" style={styles.board}>
                                     {COLUMNS.map(col => (
                                         <Droppable key={col.id} droppableId={col.id}>
                                             {(provided, snapshot) => (
                                                 <motion.div
                                                     ref={provided.innerRef}
                                                     {...provided.droppableProps}
+                                                    className="kanban-column"
                                                     style={{
                                                         ...styles.column,
                                                         background: snapshot.isDraggingOver ? '#e0e7ff' : '#f8fafc',
@@ -673,6 +643,7 @@ function KanbanBoard() {
                                                                             ref={provided.innerRef}
                                                                             {...provided.draggableProps}
                                                                             {...provided.dragHandleProps}
+                                                                            className="task-card"
                                                                             style={{
                                                                                 ...styles.taskCard,
                                                                                 ...provided.draggableProps.style,
@@ -700,6 +671,7 @@ function KanbanBoard() {
                                                                                     </span>
                                                                                 </div>
                                                                                 <button
+                                                                                    className="task-menu-button"
                                                                                     style={styles.taskMenuButton}
                                                                                     onClick={(e) => {
                                                                                         e.stopPropagation();
@@ -759,6 +731,7 @@ function KanbanBoard() {
                                 {filteredTasks.map(task => (
                                     <motion.div
                                         key={task.id}
+                                        className="list-item"
                                         style={styles.listItem}
                                         whileHover={{ x: 4 }}
                                         onClick={() => openTaskDetail(task)}
@@ -787,6 +760,7 @@ function KanbanBoard() {
                     <AnimatePresence>
                         {isActivityOpen && (
                             <motion.div
+                                className="activity-feed"
                                 style={styles.activityFeed}
                                 initial={{ width: 0, opacity: 0 }}
                                 animate={{ width: 300, opacity: 1 }}
@@ -796,6 +770,7 @@ function KanbanBoard() {
                                 <div style={styles.activityHeader}>
                                     <h3 style={styles.activityTitle}>Live Activity</h3>
                                     <button
+                                        className="activity-close"
                                         style={styles.activityClose}
                                         onClick={() => setIsActivityOpen(false)}
                                     >
@@ -870,6 +845,7 @@ function KanbanBoard() {
                                     <label style={styles.label}>Title *</label>
                                     <input
                                         required
+                                        className="kanban-input"
                                         style={styles.input}
                                         value={formData.title}
                                         onChange={e => setFormData({ ...formData, title: e.target.value })}
@@ -888,7 +864,7 @@ function KanbanBoard() {
                                     />
                                 </div>
 
-                                <div style={styles.formRow}>
+                                <div className="form-row" style={styles.formRow}>
                                     <div style={styles.formGroup}>
                                         <label style={styles.label}>Status</label>
                                         <Select
@@ -993,6 +969,7 @@ function KanbanBoard() {
                                                         ...prev,
                                                         attachments: prev.attachments.filter((_, idx) => idx !== i)
                                                     }))}
+                                                    className="remove-btn"
                                                     style={styles.removeBtn}
                                                 >
                                                     <X size={14} />
@@ -1007,7 +984,8 @@ function KanbanBoard() {
                                         <button
                                             type="button"
                                             onClick={() => handleDelete(editingTask.id)}
-                                            style={{ ...styles.button, ...styles.dangerButton }}
+                                            className="button btn-danger"
+                                            style={styles.dangerButton}
                                         >
                                             <Trash2 size={18} />
                                             Delete
@@ -1017,13 +995,15 @@ function KanbanBoard() {
                                         <button
                                             type="button"
                                             onClick={closeModal}
-                                            style={{ ...styles.button, ...styles.cancelButton }}
+                                            className="button btn-cancel"
+                                            style={styles.cancelButton}
                                         >
                                             Cancel
                                         </button>
                                         <button
                                             type="submit"
-                                            style={{ ...styles.button, ...styles.saveButton }}
+                                            className="button btn-save"
+                                            style={styles.saveButton}
                                         >
                                             <Check size={18} />
                                             {editingTask ? 'Update' : 'Create'}
@@ -1215,11 +1195,7 @@ const styles = {
         marginBottom: '24px',
         padding: '8px 0',
         flexWrap: 'wrap',
-        gap: '16px',
-        '@media (max-width: 768px)': {
-            flexDirection: 'column',
-            alignItems: 'flex-start'
-        }
+        gap: '16px'
     },
     headerLeft: {
         display: 'flex',
@@ -1254,10 +1230,7 @@ const styles = {
     },
     searchContainer: {
         position: 'relative',
-        width: 'clamp(200px, 30vw, 300px)',
-        '@media (max-width: 480px)': {
-            width: '100%'
-        }
+        width: 'clamp(200px, 30vw, 300px)'
     },
     searchIcon: {
         position: 'absolute',
@@ -1273,11 +1246,7 @@ const styles = {
         borderRadius: '8px',
         fontSize: '0.9rem',
         outline: 'none',
-        transition: 'all 0.2s',
-        ':focus': {
-            borderColor: '#4f46e5',
-            boxShadow: '0 0 0 3px rgba(79, 70, 229, 0.1)'
-        }
+        transition: 'all 0.2s'
     },
     filterButton: {
         padding: '10px',
@@ -1289,11 +1258,7 @@ const styles = {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'all 0.2s',
-        ':hover': {
-            background: '#f8fafc',
-            borderColor: '#cbd5e1'
-        }
+        transition: 'all 0.2s'
     },
     viewToggle: {
         display: 'flex',
@@ -1324,11 +1289,7 @@ const styles = {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'all 0.2s',
-        ':hover': {
-            background: '#f8fafc',
-            borderColor: '#cbd5e1'
-        }
+        transition: 'all 0.2s'
     },
     activityBadge: {
         position: 'absolute',
@@ -1354,16 +1315,7 @@ const styles = {
         fontWeight: '600',
         cursor: 'pointer',
         transition: 'all 0.2s',
-        whiteSpace: 'nowrap',
-        '@media (max-width: 480px)': {
-            width: '100%',
-            justifyContent: 'center'
-        },
-        ':hover': {
-            background: '#4338ca',
-            transform: 'translateY(-2px)',
-            boxShadow: '0 4px 12px rgba(79, 70, 229, 0.3)'
-        }
+        whiteSpace: 'nowrap'
     },
     filtersPanel: {
         overflow: 'hidden',
@@ -1375,10 +1327,7 @@ const styles = {
         borderRadius: '12px',
         display: 'flex',
         gap: '16px',
-        flexWrap: 'wrap',
-        '@media (max-width: 640px)': {
-            flexDirection: 'column'
-        }
+        flexWrap: 'wrap'
     },
     filterGroup: {
         flex: '1 1 200px',
@@ -1459,10 +1408,7 @@ const styles = {
         borderRadius: '12px',
         padding: '16px',
         border: '2px solid #e2e8f0',
-        transition: 'border-color 0.2s',
-        '@media (max-width: 768px)': {
-            flex: '0 0 280px'
-        }
+        transition: 'border-color 0.2s'
     },
     columnHeader: {
         marginBottom: '16px'
@@ -1535,11 +1481,7 @@ const styles = {
         border: 'none',
         borderRadius: '4px',
         cursor: 'pointer',
-        color: '#94a3b8',
-        ':hover': {
-            background: '#f1f5f9',
-            color: '#475569'
-        }
+        color: '#94a3b8'
     },
     taskTitle: {
         margin: '0 0 6px 0',
@@ -1573,16 +1515,7 @@ const styles = {
         overflow: 'hidden',
         height: 'fit-content',
         position: 'sticky',
-        top: '20px',
-        '@media (max-width: 1024px)': {
-            position: 'fixed',
-            right: '0',
-            top: '0',
-            bottom: '0',
-            zIndex: 100,
-            borderRadius: '12px 0 0 12px',
-            boxShadow: '-4px 0 12px rgba(0,0,0,0.1)'
-        }
+        top: '20px'
     },
     activityHeader: {
         display: 'flex',
@@ -1603,13 +1536,7 @@ const styles = {
         borderRadius: '4px',
         cursor: 'pointer',
         color: '#64748b',
-        display: 'none',
-        '@media (max-width: 1024px)': {
-            display: 'block'
-        },
-        ':hover': {
-            background: '#f1f5f9'
-        }
+        display: 'none'
     },
     activityList: {
         display: 'flex',
@@ -1662,10 +1589,7 @@ const styles = {
         borderRadius: '8px',
         border: '1px solid #e2e8f0',
         cursor: 'pointer',
-        transition: 'all 0.2s',
-        ':hover': {
-            borderColor: '#4f46e5'
-        }
+        transition: 'all 0.2s'
     },
     listItemLeft: {
         display: 'flex',
@@ -1736,10 +1660,7 @@ const styles = {
         border: 'none',
         borderRadius: '8px',
         cursor: 'pointer',
-        color: '#64748b',
-        ':hover': {
-            background: '#f1f5f9'
-        }
+        color: '#64748b'
     },
     formGroup: {
         marginBottom: '16px'
@@ -1748,10 +1669,7 @@ const styles = {
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
         gap: '12px',
-        marginBottom: '16px',
-        '@media (max-width: 480px)': {
-            gridTemplateColumns: '1fr'
-        }
+        marginBottom: '16px'
     },
     label: {
         display: 'block',
@@ -1767,11 +1685,7 @@ const styles = {
         borderRadius: '8px',
         fontSize: '0.95rem',
         outline: 'none',
-        transition: 'all 0.2s',
-        ':focus': {
-            borderColor: '#4f46e5',
-            boxShadow: '0 0 0 3px rgba(79, 70, 229, 0.1)'
-        }
+        transition: 'all 0.2s'
     },
     textarea: {
         width: '100%',
@@ -1780,11 +1694,7 @@ const styles = {
         borderRadius: '8px',
         fontSize: '0.95rem',
         resize: 'vertical',
-        outline: 'none',
-        ':focus': {
-            borderColor: '#4f46e5',
-            boxShadow: '0 0 0 3px rgba(79, 70, 229, 0.1)'
-        }
+        outline: 'none'
     },
     dropzone: {
         border: '2px dashed #e2e8f0',
@@ -1850,10 +1760,7 @@ const styles = {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        cursor: 'pointer',
-        ':hover': {
-            background: '#dc2626'
-        }
+        cursor: 'pointer'
     },
     modalFooter: {
         display: 'flex',
@@ -1885,24 +1792,15 @@ const styles = {
     },
     saveButton: {
         background: '#4f46e5',
-        color: 'white',
-        ':hover': {
-            background: '#4338ca'
-        }
+        color: 'white'
     },
     cancelButton: {
         background: '#f1f5f9',
-        color: '#475569',
-        ':hover': {
-            background: '#e2e8f0'
-        }
+        color: '#475569'
     },
     dangerButton: {
         background: '#fee2e2',
-        color: '#ef4444',
-        ':hover': {
-            background: '#fecaca'
-        }
+        color: '#ef4444'
     },
     detailContent: {
         padding: '8px 0'
@@ -1984,10 +1882,7 @@ const styles = {
         border: '1px solid #e2e8f0',
         borderRadius: '8px',
         fontSize: '0.9rem',
-        outline: 'none',
-        ':focus': {
-            borderColor: '#4f46e5'
-        }
+        outline: 'none'
     },
     commentButton: {
         padding: '8px 16px',
@@ -1997,36 +1892,13 @@ const styles = {
         borderRadius: '8px',
         fontSize: '0.9rem',
         fontWeight: '500',
-        cursor: 'pointer',
-        ':hover': {
-            background: '#4338ca'
-        }
+        cursor: 'pointer'
     },
     attachmentsSection: {
         marginTop: '20px'
     }
 };
 
-// Add media queries via style element
-const mediaQueryStyles = `
-    @media (max-width: 768px) {
-        .add-button-text {
-            display: none;
-        }
-    }
-    
-    @media (max-width: 640px) {
-        [style*="container"] {
-            padding: 12px;
-        }
-    }
-`;
 
-// Inject media queries
-if (typeof document !== 'undefined') {
-    const style = document.createElement('style');
-    style.textContent = mediaQueryStyles;
-    document.head.appendChild(style);
-}
 
 export default KanbanBoard;
